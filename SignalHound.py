@@ -18,15 +18,21 @@
 # TODO: Respin lots of the messy if: elif: else: statements into a dictionary lookup
 
 import ctypes as ct
-from ctypes import wintypes as wt
+import ctypes.util as ctu
 import bb_api_h as hf
+
+
+import sys
+
+if sys.platform == "win32":
+	from ctypes import wintypes as wt
 
 import logging
 
-# pyloint: disable=
-
 import numpy as np
 from numpy.core.multiarray import int_asbuffer
+import os.path
+
 
 class SignalHound(object):
 
@@ -70,22 +76,47 @@ class SignalHound(object):
 		"bbNoTriggerFound"             : 3
 	}
 
+	rawDataArrSize = 299008
+	rawSweepTriggerArraySize = 68
 
 	def __init__(self):
 
 		self.log = logging.getLogger("Main.DeviceInt")
 		self.devOpen = False
 
-		self.log.info("Opening DLL")
-		self.dll = ct.CDLL ("bb_api.dll")
+		if sys.platform == "win32":
 
-		# This is horrible ctypes DLL hackery
-		# You need to access the internal DLL handle to properly force windows to close the dll handle, which
-		# is the only way to COMPLETELY close the device interface.
+			self.log.info("Opening DLL")
+			libPath = ctu.find_library("bb_api.dll")
 
-		# It's needed if you ever want to completely close the device, to re-initialize the device interface.
-		# ctypes doesn't make manually deallocating a dll easy.
-		self.dllHandle = wt.HMODULE(self.dll._handle)
+			if not libPath:
+				if os.path.exists("bb_api.dll"):  # This is a messy hack, but it makes imports work with my scripts. I should
+													# Really put the signal hound DLL on my $PATH, but whatever
+					libPath = "bb_api.dll"
+				elif os.path.exists("../bb_api.dll"):
+					libPath = "../bb_api.dll"
+				else:
+					self.log.error("Could not locate signal hound DLL.")
+					raise EnvironmentError("Required DLL not available on system PATH")
+
+
+			self.log.info("Found dll located at %s", libPath)
+			self.dll = ct.CDLL (libPath)
+
+			# This is horrible ctypes DLL hackery
+			# You need to access the internal DLL handle to properly force windows to close the dll handle, which
+			# is the only way to COMPLETELY close the device interface.
+
+			# It's needed if you ever want to completely close the device, to re-initialize the device interface.
+			# ctypes doesn't make manually deallocating a dll easy.
+			self.dllHandle = wt.HMODULE(self.dll._handle)
+
+
+
+		elif sys.platform == "linux" or sys.platform == "linux2":
+			self.log.error("Linux Not supported for API Verson 2.x!")
+			raise NotImplementedError("Linux Not supported for API Verson 2.x!")
+
 
 		self.cRawSweepCallbackFunc = None
 
@@ -114,12 +145,15 @@ class SignalHound(object):
 		# harmless, and I figure it's better to explicitly clean-up the DLL handle then
 		# rely on it happening automatically
 		self.log.info("Forcing DLL handle closed")
-		try:
-			ct.windll.kernel32.FreeLibrary(self.dllHandle)
-		except ct.ArgumentError as e:
-			self.log.warning("Argument error in forcing DLL closed")
-			self.log.warning("%s", e)
-			pass
+
+		if sys.platform == "win32":
+			try:
+				ct.windll.kernel32.FreeLibrary(self.dllHandle)
+			except ct.ArgumentError as e:
+				self.log.warning("Argument error in forcing DLL closed")
+				self.log.warning("%s", e)
+
+
 
 
 	def openDevice(self):
@@ -147,7 +181,7 @@ class SignalHound(object):
 		try:
 			self.dll.bbAbort(self.deviceHandle)
 			self.log.info("Running acquistion aborted.")
-		except Error as e:
+		except Exception as e:
 			self.log.info("Could not abort acquisition: %s", e)
 
 
@@ -160,14 +194,18 @@ class SignalHound(object):
 
 
 	def queryDeviceDiagnostics(self):
-		# BB_API bbStatus bbQueryDiagnostics(int device, float *temperature, float *voltage1_8, float *voltage1_2, float *voltageUSB, float *currentUSB);
+		raise DeprecationWarning("This function is no longer supported in the 2.0 SignalHound API")
+
+
+	def getDeviceDiagnostics(self):
+
+
+		# BB_API bbStatus bbGetDeviceDiagnostics(int device, float *temperature, float *voltage1_8, float *voltage1_2, float *voltageUSB, float *currentUSB);
 
 		# temperature  Pointer to 32bit float. If the function is successful temperature will point
 		# 		to the current internal device temperature, in degrees Celsius. See
 		# 		"bbSelfCal" for an explanation on why you need to monitor the device
 		# 		temperature.
-		# voltage1_8  Factory use only: Internal regulator.
-		# voltage1_2 Factory use only: Internal regulator.
 		# voltageUSB  USB operating voltage, in volts. Acceptable ranges are 4.40 to 5.25 V.
 		# currentUSB  USB current draw, in mA. Acceptable ranges are 800 - 1000 mA
 
@@ -179,22 +217,18 @@ class SignalHound(object):
 		# A USB voltage of below 4.4V may cause readings to be out of spec. Check your cable for damage and
 		# USB connectors for damage or oxidation.
 
-		self.log.info("Querying device diagnostics.")
+		# self.log.info("Querying device diagnostics.")
 		temperature = ct.c_float(0)
-		voltage1_8 = ct.c_float(0)
-		voltage1_2 = ct.c_float(0)
 		voltageUSB = ct.c_float(0)
 		currentUSB = ct.c_float(0)
 
 		temperaturePnt = ct.pointer(temperature)
-		voltage1_8Pnt = ct.pointer(voltage1_8)
-		voltage1_2Pnt = ct.pointer(voltage1_2)
 		voltageUSBPnt = ct.pointer(voltageUSB)
 		currentUSBPnt = ct.pointer(currentUSB)
 
 
 
-		err = self.dll.bbQueryDiagnostics(self.deviceHandle, temperaturePnt, voltage1_8Pnt, voltage1_2Pnt, voltageUSBPnt, currentUSBPnt)
+		err = self.dll.bbGetDeviceDiagnostics(self.deviceHandle, temperaturePnt, voltageUSBPnt, currentUSBPnt)
 
 		if err == self.bbStatus["bbNoError"]:
 			pass
@@ -207,8 +241,6 @@ class SignalHound(object):
 
 		ret = {
 			"temperature" :  temperature.value,
-			"voltage1_8"  :  voltage1_8.value,
-			"voltage1_2"  :  voltage1_2.value,
 			"voltageUSB"  :  voltageUSB.value,
 			"currentUSB"  :  currentUSB.value
 		}
@@ -219,8 +251,41 @@ class SignalHound(object):
 		if ret["temperature"] > 70 or ret["temperature"] < 0:
 			raise EnvironmentError("Hardware temperature outside of normal operating bounds.")
 
-		self.log.info("Diagnostics queried. Values = %s", ret)
+		# self.log.info("Diagnostics queried. Values = \n%s", "\n".join(["	{key}, {value}".format(key=key, value=value) for key, value in ret.iteritems()]))
 		return ret
+
+	def queryStreamInfo(self):
+
+
+		return_len         = ct.c_int(0)
+		bandwidth          = ct.c_double(0)
+		samples_per_sec    = ct.c_int(0)
+
+		return_lenPnt      = ct.pointer(return_len)
+		bandwidthPnt       = ct.pointer(bandwidth)
+		samples_per_secPnt = ct.pointer(samples_per_sec)
+
+		err = self.dll.bbQueryStreamInfo(self.deviceHandle, return_lenPnt, bandwidthPnt, samples_per_secPnt)
+
+		if err == self.bbStatus["bbNoError"]:
+			pass
+		elif err == self.bbStatus["bbDeviceNotOpenErr"]:
+			raise IOError("Device not open!")
+		elif err == self.bbStatus["bbDeviceNotConfiguredErr"]:
+			raise IOError("The device specified is not currently streaming!")
+		else:
+			raise IOError("Unknown error!")
+
+		# The raw data array returned by fetchRaw when in streaming mode is the value of return_len * 2 (since each value is two floats)
+		self.rawDataArrSize = return_len.value * 2
+
+		values = {
+			"return_len"      : return_len.value,
+			"samples_per_sec" : bandwidth.value,
+			"bandwidth"       : samples_per_sec.value
+		}
+
+		return values
 
 	def configureAcquisition(self, detector, scale):
 		# BB_API bbStatus bbConfigureAcquisition(int device, unsigned int detector, unsigned int scale);
@@ -562,6 +627,56 @@ class SignalHound(object):
 
 
 
+	def configureIQ(self, downsample, bandwidth):
+		# BB_API bbStatus bbConfigureIQ(int device, int downsampleFactor, double bandwidth);
+
+		#downsampleFactor  Specify a decimation rate for the 40MS/s IQ digital stream.
+		#bandwidth         Specify a bandpass filter width on the IQ digital stream.
+
+		# Downsample factor settings:
+		# Decimation-Rate  Sample Rate (IQ pairs/s)  Maximum Bandwidth
+		# 1                40 MS/s                   27 MHz
+		# 2                20 MS/s                   17.8 MHz
+		# 4                10 MS/s                   8.0 MHz
+		# 8                5 MS/s                    3.75 MHz
+		# 16               2.5 MS/s                  2.0 MHz
+		# 32               1.25 MS/s                 1.0 MHz
+		# 64               0.625 MS/s                0.5 MHz
+		# 128              0.3125 MS/s               0.125 MHz
+
+		# This function is used to configure the digital IQ data stream. A decimation factor and filter bandwidth
+		# are able to be specified. The decimation rate divides the IQ sample rate directly while the bandwidth
+		# parameter further filters the digital stream.
+		# For each given decimation rate, a maximum bandwidth value must be supplied to account for sufficient
+		# filter rolloff. That table is above. See  bbFetchRaw() for polling the IQ data stream
+
+		validDecimationFactors = [1<<i for i in range(8)]
+		# Resolves to [1, 2, 4, 8, 16, 32, 64, 128]
+		if downsample not in validDecimationFactors:
+			raise ValueError("Decimation ratio must be one of values: %s. Specified value: %s" % (validDecimationFactors, downsample))
+
+
+		bandwidth  = ct.c_double(bandwidth)
+		downsample = ct.c_int(downsample)
+
+		err = self.dll.bbConfigureIQ(self.deviceHandle, downsample, bandwidth)
+
+		if err == self.bbStatus["bbNoError"]:
+			self.log.info("configureSweepCoupling Succeeded.")
+		elif err == self.bbStatus["bbDeviceNotOpenErr"]:
+			raise IOError("Device not open!")
+		elif err == self.bbStatus["bbInvalidParameterErr"]:
+			raise IOError("The downsample rate is outside the acceptable input range or the downsample rate is not a power of two.")
+		elif err == self.bbStatus["bbClampedToLowerLimit"]:
+			raise IOError("The bandpass filter width specified is lower than  BB_MIN_IQ_BW")
+		elif err == self.bbStatus["bbClampedToUpperLimit"]:
+			raise IOError("Warning that the bandpass filter width was clamped to the maximum value allowed by the downsampleFaction.")
+		else:
+			raise IOError("Unknown error setting bbConfigureIQ! Error = %s" % err)
+
+
+
+
 
 	def configureWindow(self, window):
 		# BB_API bbStatus bbConfigureWindow(int device, unsigned int window);
@@ -796,7 +911,7 @@ class SignalHound(object):
 		if (ppf * steps) % 16 != 0:
 			raise ValueError("(ppf * steps) must be a multiple of 16")
 
-		if start + (steps *20) > 6000:
+		if start + (steps * 20) > 6000:
 			raise ValueError("The final center frequency, obtained by the equation (start + steps*20), cannot be greater than 6000 (6 GHz).")
 
 
@@ -1008,6 +1123,7 @@ class SignalHound(object):
 
 		modeOpts = {
 			"sweeping"       : hf.BB_SWEEPING,
+			"streaming"      : hf.BB_STREAMING,
 			"real-time"      : hf.BB_REAL_TIME,
 			"zero-span"      : hf.BB_ZERO_SPAN,
 			"time-gate"      : hf.BB_TIME_GATE,
@@ -1033,13 +1149,17 @@ class SignalHound(object):
 			raise ValueError("Mode must be one of %s. Passed value was %s." % (modeOpts, mode))
 
 
+		if mode == hf.BB_ZERO_SPAN or mode == hf.BB_TIME_GATE:
+			raise NotImplementedError("Zero span and time-gate modes are not functional yet in the BB 2.0 API Version. Please contact signalhound for more information.")
+
 		if mode == hf.BB_ZERO_SPAN:
 			if flag in zeroSpanOpts:
 				flag = zeroSpanOpts[flag]
 			else:
 				raise ValueError("Available flag settings for mode \"zero-span\" are \"demod-am\" and \"demod-fm\". Passed value was %s." % flag)
 
-		elif mode == hf.BB_RAW_PIPE:
+		# Checking for raw-pipe mode is messy, since it uses the same configuration value as the streaming mode.
+		elif mode == hf.BB_RAW_PIPE and self.acq_conf["acq_mode"] == "raw-pipe":
 			if flag in rawPipeOpts:
 				flag = rawPipeOpts[flag]
 			else:
@@ -1050,12 +1170,15 @@ class SignalHound(object):
 		else:
 			flag = 0
 
+		self.log.warning("Add checks for frequency limit across BB60a/BB60c")
+
+
 		if mode == hf.BB_REAL_TIME:
 			if not "span_freq" in self.acq_conf:
 				raise ValueError("You must call configureCenterSpan() before initiate()!")
-			elif (self.acq_conf["span_freq"] > hf.BB_MAX_RT_SPAN or
+			elif (self.acq_conf["span_freq"] > hf.BB60C_MAX_RT_SPAN or
 				self.acq_conf["span_freq"] < hf.BB_MIN_RT_SPAN ):
-				raise ValueError("Real-time mode maximum span frequency is 20 Mhz. Specified span frequency = %f" % self.acq_conf["span_freq"])
+				raise ValueError("Real-time mode maximum span frequency is 27 Mhz. Specified span frequency = %f" % self.acq_conf["span_freq"])
 
 			if not "rbw" in self.acq_conf:
 				raise ValueError("You must call configureSweepCoupling() before initiate()!")
@@ -1126,6 +1249,8 @@ class SignalHound(object):
 
 		if err == self.bbStatus["bbNoError"]:
 			# self.log.info("Call to fetchTrace succeeded.")  # Commented out because it was NOISY
+
+			self.sequentialADCErrors = 0  # There was no clipping, so reset the clipping integrator
 			pass
 		elif err == self.bbStatus["bbNullPtrErr"]:
 			raise IOError("Null pointer error!")
@@ -1143,7 +1268,7 @@ class SignalHound(object):
 			# Only throw an actual error if we've been clipping for a while.
 			# This way, transients won't break things (as fast, in any event).
 			if self.sequentialADCErrors > 10:
-				raise IOError("The ADC has detected clipping of the input signal!")
+				raise IOError("The ADC has detected clipping of the input signal for more then 10 sequential samples!")
 
 		elif err == self.bbStatus["bbNoTriggerFound"]:
 			raise IOError('''In time-gated analysis, if the spectrum returned is not representative of
@@ -1167,7 +1292,7 @@ class SignalHound(object):
 			"min" : minData
 		}
 
-		self.sequentialADCErrors = 0  # There was no clipping, so reset the clipping integrator
+
 
 		return ret
 
@@ -1280,7 +1405,7 @@ class SignalHound(object):
 
 		return ret
 
-	def fetchRaw(self):
+	def fetchRaw(self, ctDataBufPtr=None, ctTrigBufPtr=None):
 		# BB_API bbStatus bbFetchRaw(int device, float *buffer, int *triggers);
 
 		# device  Handle of a streaming device.
@@ -1322,20 +1447,29 @@ class SignalHound(object):
 		# The values returned are in the time domain and are uncorrected. (See bbFetchRawCorrections() for
 		# information on making amplitude corrections on the raw data)
 
+		# If you pass ctDataBufPtr or ctTrigBufPtr, the data will be written into the passed ctypes array that is pointed to by the passed pointer,
+		# rather then allocating a local ctypes array, and decoding the returned data into a numpy array before returning
+		# You can get the size of the buffer by calling getRawSweep_size(), getRawSweep_s_size() and getRawSweepTrig_size()
+
+		if not ctDataBufPtr:
+			rawBuf = (ct.c_float * self.rawDataArrSize)()
+			rawBufPtr = ct.pointer(rawBuf)
+		else:
+			rawBufPtr = ctDataBufPtr
+
+		if not ctTrigBufPtr:
+			triggers = (ct.c_int * self.rawSweepTriggerArraySize)()
+			triggersPtr = ct.pointer(triggers)
+		else:
+			triggersPtr = ctTrigBufPtr
 
 
-		arraySize = 299008
-		rawBuf = (ct.c_float * arraySize)()
-		rawBufPtr = ct.pointer(rawBuf)
-
-		triggerArraySize = 68
-		triggers = (ct.c_int * triggerArraySize)(0)
-		triggersPtr = ct.pointer(triggers)
 
 		err = self.dll.bbFetchRaw(self.deviceHandle, rawBufPtr, triggersPtr)
 
 		if err == self.bbStatus["bbNoError"]:
-			pass  # No print statements here. Too noisy
+			self.sequentialADCErrors = 0  # There was no clipping, so reset the clipping integrator
+			# No print statements here. Too noisy
 
 		elif err == self.bbStatus["bbNullPtrErr"]:
 			raise IOError("Null pointer error!")
@@ -1344,7 +1478,13 @@ class SignalHound(object):
 		elif err == self.bbStatus["bbDeviceNotConfiguredErr"]:
 			raise IOError("Device not Configured!")
 		elif err == self.bbStatus["bbADCOverflow"]:
-			raise IOError("The ADC has detected clipping of the input signal!")
+			self.sequentialADCErrors += 1
+
+			# Only throw an actual error if we've been clipping for a while.
+			# This way, transients won't break things (as fast, in any event).
+			if self.sequentialADCErrors > 10:
+				raise IOError("The ADC has detected clipping of the input signal for more then 10 sequential samples!")
+
 		elif err == self.bbStatus["bbPacketFramingErr"]:
 			raise IOError("Data loss or miscommunication has occurred between the device and the API!")
 		elif err == self.bbStatus["bbDeviceConnectionErr"]:
@@ -1352,35 +1492,42 @@ class SignalHound(object):
 		else:
 			raise IOError("Unknown error setting fetchRaw! Error = %s" % err)
 
+		ret = {}
 
-		data = SignalHound.fastDecodeArray(rawBuf, arraySize, np.short)
-		triggers = SignalHound.fastDecodeArray(triggers, triggerArraySize, np.int32)
+		if not ctDataBufPtr:
+			ret["data"] = SignalHound.fastDecodeArray(rawBuf, self.rawDataArrSize, np.float32)
 
-		ret = {
-			"data" : data,
-			"triggers" : triggers
-		}
+		if not ctTrigBufPtr:
+			ret["triggers"] = SignalHound.fastDecodeArray(triggers, self.rawSweepTriggerArraySize, np.int32)
+
 
 		return ret
 
-	def fetchRaw_s(self):
+	def fetchRaw_s(self, ctDataBufPtr=None, ctTrigBufPtr=None):
 		# BB_API bbStatus bbFetchRaw_s(int device, short *buffer, int *triggers);
 
 		# This is functionally identical to fetchRaw, only it returns an array of shorts, rather then floats.
 
 
-		arraySize = 299008
-		rawBuf = (ct.c_short * arraySize)()
-		rawBufPtr = ct.pointer(rawBuf)
+		if not ctDataBufPtr:
+			rawBuf = (ct.c_short * self.rawDataArrSize)()
+			rawBufPtr = ct.pointer(rawBuf)
+		else:
+			rawBufPtr = ctDataBufPtr
 
-		triggerArraySize = 68
-		triggers = (ct.c_int * triggerArraySize)(0)
-		triggersPtr = ct.pointer(triggers)
+		if not ctTrigBufPtr:
+			triggers = (ct.c_int * self.rawSweepTriggerArraySize)(0)
+			triggersPtr = ct.pointer(triggers)
+		else:
+			triggersPtr = ctTrigBufPtr
 
-		err = self.dll.bbFetchRaw(self.deviceHandle, rawBufPtr, triggersPtr)
+
+
+		err = self.dll.bbFetchRaw_s(self.deviceHandle, rawBufPtr, triggersPtr)
 
 		if err == self.bbStatus["bbNoError"]:
-			pass  # No print statements here. Too noisy
+			self.sequentialADCErrors = 0
+			# No print statements here. Too noisy
 
 		elif err == self.bbStatus["bbNullPtrErr"]:
 			raise IOError("Null pointer error!")
@@ -1389,7 +1536,14 @@ class SignalHound(object):
 		elif err == self.bbStatus["bbDeviceNotConfiguredErr"]:
 			raise IOError("Device not Configured!")
 		elif err == self.bbStatus["bbADCOverflow"]:
-			raise IOError("The ADC has detected clipping of the input signal!")
+			self.sequentialADCErrors += 1
+
+			# Only throw an actual error if we've been clipping for a while.
+			# This way, transients won't break things (as fast, in any event).
+			if self.sequentialADCErrors > 10:
+				raise IOError("The ADC has detected clipping of the input signal for more then 10 sequential samples!")
+
+
 		elif err == self.bbStatus["bbPacketFramingErr"]:
 			raise IOError("Data loss or miscommunication has occurred between the device and the API!")
 		elif err == self.bbStatus["bbDeviceConnectionErr"]:
@@ -1398,15 +1552,31 @@ class SignalHound(object):
 			raise IOError("Unknown error setting fetchRaw_s! Error = %s" % err)
 
 
-		data = SignalHound.fastDecodeArray(rawBuf, arraySize, np.short)
-		triggers = SignalHound.fastDecodeArray(triggers, triggerArraySize, np.int32)
+		ret = {}
 
-		ret = {
-			"data" : data,
-			"triggers" : triggers
-		}
+		if not ctDataBufPtr:
+			ret["data"] = SignalHound.fastDecodeArray(rawBuf, self.rawDataArrSize, np.short)
+
+		if not ctTrigBufPtr:
+			ret["triggers"] = SignalHound.fastDecodeArray(triggers, self.rawSweepTriggerArraySize, np.int32)
+
 
 		return ret
+
+	@classmethod
+	def getRawSweep_size(cls):
+		return ct.c_float, cls.rawDataArrSize
+
+	@classmethod
+	def getRawSweep_s_size(cls):
+		return ct.c_short, cls.rawDataArrSize
+
+	@classmethod
+	def getRawSweepTrig_size(cls):
+		return ct.c_int, cls.rawSweepTriggerArraySize
+
+
+
 
 	def fetchRawSweep(self):
 		# BB_API bbStatus bbFetchRawSweep(int device, short *buffer);
@@ -1526,7 +1696,7 @@ class SignalHound(object):
 		# Note: Calling while in BB_RAW_PIPE mode will produce a bbDeviceNotConfiguredErr
 
 
-		self.log.info("Querying device for trace information.")
+		# self.log.info("Querying device for trace information.")
 
 		traceLen = ct.c_uint(0)
 		traceLenPnt = ct.pointer(traceLen)
@@ -1541,7 +1711,8 @@ class SignalHound(object):
 		err = self.dll.bbQueryTraceInfo(self.deviceHandle, traceLenPnt, binSizePnt, startPnt)
 
 		if err == self.bbStatus["bbNoError"]:
-			self.log.info("returned queryTraceInfo: %d, %f, %f" % (traceLen.value, binSize.value, start.value))
+			# self.log.info("returned queryTraceInfo: %d, %f, %f" % (traceLen.value, binSize.value, start.value))
+			pass
 		elif err == self.bbStatus["bbNullPtrErr"]:
 			raise IOError("Null pointer error!")
 		elif err == self.bbStatus["bbDeviceNotOpenErr"]:
@@ -1874,7 +2045,7 @@ class SignalHound(object):
 		except IOError:
 			tmp = {}
 
-		tmp.update(self.queryDeviceDiagnostics())
+		tmp.update(self.getDeviceDiagnostics())
 		tmp.update(self.acq_conf)
 
 		return tmp

@@ -63,6 +63,56 @@ def testCallback(sh):
 
 	sh.abort()
 
+def testIqStreaming(sh):
+	global START_TIME  #hacking about for determining callback interval times. I shouldn't be using global, but fukkit.
+
+	START_TIME = time.time()
+	loops = 0
+
+	sh.configureCenterSpan(100e6, 20e6)
+	sh.configureLevel(10, "auto")
+	sh.configureGain(0)
+	sh.configureIO("dc", "int-ref-out", "out-logic-low")
+	sh.configureIQ(1, 20e6)  # 2x downdampling, 15 Mhz bandwith
+
+
+	sh.initiate("streaming", None)
+	print sh.queryStreamInfo()
+	print sh.rawDataArrSize
+
+	out = open("dat.bin", "wb")
+
+	try:
+		while 1:
+			try:
+				data = sh.fetchRaw()
+				DATA_LOG.append(data)
+			except IOError:
+
+				print "ioerror"
+
+			if loops % 100 == 0:
+				print loops
+				now = time.time()
+				delta = now-START_TIME
+				freq = 1 / (delta / 100)
+				print "Elapsed Time = ", delta, "Frequency = ", freq
+				START_TIME = now
+			if len(DATA_LOG):
+				tmp = DATA_LOG.pop()
+				out.write(tmp["data"])
+				out.write(tmp["triggers"])
+			loops += 1
+
+		time.sleep(50)
+
+	except KeyboardInterrupt:
+		pass
+
+	out.close()
+	sh.abort()
+
+
 def testRawPipeMode(sh):
 	global START_TIME  #hacking about for determining callback interval times. I shouldn't be using global, but fukkit.
 
@@ -80,7 +130,7 @@ def testRawPipeMode(sh):
 	sh.configureIO("dc", "int-ref-out", "out-logic-low")
 	sh.configureDemod("fm", 92.9e6, 250e3, 12e3, 20, 50)
 
-	sh.configureRawSweep(100, 8, 2)
+	sh.configureRawSweep(100, 1, 16)
 
 	# sh.initiate("raw-sweep-loop", 0)
 	sh.initiate("raw-pipe", "20-mhz")
@@ -103,7 +153,7 @@ def testRawPipeMode(sh):
 	try:
 		while 1:
 			try:
-				DATA_LOG.append(sh.fetchRaw())
+				DATA_LOG.append(sh.fetchRaw_s())
 			except IOError:
 
 				print "ioerror"
@@ -290,11 +340,11 @@ def testGpsSweeps(sh):
 	sh.abort()
 
 def testDeviceStatusQueries(sh):
-	sh.queryDeviceDiagnostics()
-	sh.getDeviceType()
-	sh.getSerialNumber()
 	sh.getFirmwareVersion()
 	sh.getAPIVersion()
+	print sh.getDeviceDiagnostics()
+	sh.getDeviceType()
+	sh.getSerialNumber()
 
 def resetDevice(sh):
 	sh.preset()
@@ -316,7 +366,7 @@ def audioTest(sh, freq = 88.7e6):
 	stream = sOut.open(format = c_FORMAT, channels = c_CHANNELS, rate = c_RATE, output = True, frames_per_buffer = 4096)
 
 	# sh.preset()
-	sh.queryDeviceDiagnostics()
+	sh.getDeviceDiagnostics()
 	# sh.configureAcquisition("average", "log-scale")
 	# sh.configureCenterSpan(100e6, 50e6)
 	# sh.configureLevel(-50, 10)
@@ -356,6 +406,7 @@ def printUsage():
 		print "	'raw-pipe' - Try to log data from a raw-pipe connection to disk (warning - uses enormous amounts of disk space)"
 		print "	'callback' - Try to capture data via bbStartRawSweepLoop"
 		print "	'traces' - Fetch formatted traces, and log to disk"
+		print "	'iq' - Fetch IQ samples"
 		print "	'reset' - Reset the connected device"
 
 
@@ -376,7 +427,8 @@ def go():
 		'callback' : testCallback,
 		'traces'   : testSweeps,
 		'gps'      : testGpsSweeps,
-		'reset'    : resetDevice
+		'reset'    : resetDevice,
+		'iq'       : testIqStreaming
 	}
 
 	if sys.argv[1] in funcs:

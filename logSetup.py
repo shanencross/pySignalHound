@@ -110,35 +110,29 @@ class RobustFileHandler(logging.FileHandler):
 
 		self.close()
 
-
-def exceptHook(exc_type, exc_value, exc_traceback):
-	if issubclass(exc_type, KeyboardInterrupt):
-		sys.__excepthook__(exc_type, exc_value, exc_traceback)
-		return
-	mainLogger = logging.getLogger("Main")                  # Main logger
-	mainLogger.critical('Uncaught exception!')
-	mainLogger.critical("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
-
-
+LOGGING_INITIALIZED = False
 
 def initLogging(logLevel=logging.INFO, printQ = None):
 	print "Setting up loggers....",
+	global LOGGING_INITIALIZED
 
-	mainLogger = logging.getLogger("Main")                  # Main logger
-	mainLogger.setLevel(logLevel)
-	ch = ColourHandler(printQ = printQ)
-	mainLogger.addHandler(ch)
+	if not LOGGING_INITIALIZED:
+		mainLogger = logging.getLogger("Main")                  # Main logger
+		mainLogger.setLevel(logLevel)
+		ch = ColourHandler(printQ = printQ)
+		mainLogger.addHandler(ch)
 
-	logName = "Error - %s.txt" % (time.strftime("%Y-%m-%d %H;%M;%S", time.gmtime()))
+		logName = "Error - %s.txt" % (time.strftime("%Y-%m-%d %H;%M;%S", time.gmtime()))
 
-	errLogHandler = RobustFileHandler(os.path.join("./logs", logName))
-	errLogHandler.setLevel(logging.WARNING)
-	formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-	errLogHandler.setFormatter(formatter)
+		if not os.path.isdir("./logs"):
+			os.mkdir("./logs")
 
-	mainLogger.addHandler(errLogHandler)
+		errLogHandler = RobustFileHandler(os.path.join("./logs", logName))
+		errLogHandler.setLevel(logging.WARNING)
+		formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+		errLogHandler.setFormatter(formatter)
 
-	# Install override for excepthook, to catch all errors
-	sys.excepthook = exceptHook
+		mainLogger.addHandler(errLogHandler)
+		LOGGING_INITIALIZED = True
 
 	print "done"
